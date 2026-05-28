@@ -20,7 +20,7 @@ STATE_FILE = "channels_state.json"
 
 # ⭐ ضع هنا معرف القناة التي تريد التركيز عليها فقط (يمكنك وضع الرابط العام مثل '@اسم_القناة')
 # أو إذا كانت قناة خاصة ضع رقم الـ ID الخاص بها مباشرة (بدون علامات تنصيص إذا كان رقماً)
-TARGET_CHANNEL = "المنحة ELMIN7A" 
+TARGET_CHANNEL = "@elmin7a"
 
 # 2. دالة الاتصال بـ OpenRouter لفرز وتعديل وتسمية المحتوى
 def process_with_openrouter(text):
