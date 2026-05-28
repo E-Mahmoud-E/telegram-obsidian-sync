@@ -4,11 +4,11 @@ import requests
 import time
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from google.oauth2.service_account import Credentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
-# 1. إعداد المتغيرات من بيئة جيت هاب الأمنية
+# 1. إعداد المتغيرات الأمنية من بيئة جيت هاب
 API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 SESSION_STRING = os.environ["TELEGRAM_SESSION"]
@@ -18,12 +18,11 @@ GDRIVE_JSON = json.loads(os.environ["GDRIVE_CREDENTIALS"])
 
 STATE_FILE = "channels_state.json"
 
-# ⭐ ضع هنا معرف القناة التي تريد التركيز عليها فقط (يمكنك وضع الرابط العام مثل '@اسم_القناة')
-# أو إذا كانت قناة خاصة ضع رقم الـ ID الخاص بها مباشرة (بدون علامات تنصيص إذا كان رقماً)
-TARGET_CHANNEL = "@elmin7a"
+# القناة المستهدفة
+TARGET_CHANNEL = "@elmin7a" 
 
-# 2. دالة الاتصال بـ OpenRouter لفرز وتعديل وتسمية المحتوى
-def process_with_openrouter(text):
+# 2. دالة الاتصال بـ OpenRouter مع ميزة إعادة المحاولة التلقائية عند الفشل
+def process_with_openrouter(text, retries=3, delay=5):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
@@ -44,51 +43,65 @@ def process_with_openrouter(text):
     )
     
     payload = {
-        "model": "openrouter/owl-alpha", 
+        "model": "google/gemini-2.5-flash", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
         ]
     }
     
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        res_data = response.json()
-        
-        if 'error' in res_data:
-            print(f"❌ OpenRouter API Error: {res_data['error'].get('message')}")
-            return {"important": False}
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            res_data = response.json()
             
-        ai_reply = res_data['choices'][0]['message']['content'].strip()
-        
-        if ai_reply.startswith("```json"):
-            ai_reply = ai_reply.replace("```json", "").replace("```", "").strip()
-        elif ai_reply.startswith("```"):
-            ai_reply = ai_reply.replace("```", "").strip()
+            if 'error' in res_data:
+                print(f"⚠️ OpenRouter Error (Attempt {attempt+1}/{retries}): {res_data['error'].get('message')}")
+                time.sleep(delay)
+                continue
+                
+            ai_reply = res_data['choices'][0]['message']['content'].strip()
             
-        return json.loads(ai_reply)
-    except Exception as e:
-        print(f"❌ Error in OpenRouter processing: {e}")
-        return {"important": False}
+            if ai_reply.startswith("```json"):
+                ai_reply = ai_reply.replace("```json", "").replace("```", "").strip()
+            elif ai_reply.startswith("```"):
+                ai_reply = ai_reply.replace("```", "").strip()
+                
+            return json.loads(ai_reply)
+            
+        except Exception as e:
+            print(f"⚠️ Connection Error (Attempt {attempt+1}/{retries}): {e}")
+            time.sleep(delay)
+            
+    print("❌ Failed to process message after all retries.")
+    return {"important": False}
 
-# 3. دالة رفع الملف إلى Google Drive
+# 3. دالة رفع الملف إلى Google Drive (المحدثة والمصلحة لأخطاء الـ Token)
 def upload_to_drive(title, content):
-    creds = Credentials.from_service_account_info(GDRIVE_JSON, scopes=["[https://www.googleapis.com/auth/drive.file](https://www.googleapis.com/auth/drive.file)"])
-    service = build('drive', 'v3', credentials=creds)
-    
-    file_metadata = {
-        'name': f"{title}.md",
-        'parents': [FOLDER_ID]
-    }
-    media = MediaInMemoryUpload(content.encode('utf-8'), mimetype='text/markdown')
+    # استخدام النطاق الأوسع والأشمل لحل مشكلة No access token
+    SCOPES = ["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)"]
     
     try:
+        # بناء التوثيق بشكل صريح وإجباري مع النطاق الصحيح
+        creds = service_account.Credentials.from_service_account_info(GDRIVE_JSON, scopes=SCOPES)
+        service = build('drive', 'v3', credentials=creds)
+        
+        file_metadata = {
+            'name': f"{title}.md",
+            'parents': [FOLDER_ID]
+        }
+        
+        media = MediaInMemoryUpload(content.encode('utf-8'), mimetype='text/markdown')
+        
+        # تنفيذ أمر الإنشاء والرفع
         file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f" Successfully uploaded: {title}.md")
+        print(f" Successfully uploaded to Drive: '{title}.md' (File ID: {file.get('id')})")
+        return True
     except Exception as e:
-        print(f"Error uploading to Drive: {e}")
+        print(f"❌ Error uploading to Drive: {e}")
+        return False
 
-# 4. المنطق الرئيسي للتركيز على قناة واحدة والسحب من البداية
+# 4. المنطق الرئيسي المستمر
 async def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -102,18 +115,16 @@ async def main():
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.connect()
     
-    # الحصول على معلومات القناة المستهدفة لتأكيد وجودها ومعرفة اسمها الحقيقي
     try:
         entity = await client.get_entity(TARGET_CHANNEL)
         channel_id = str(entity.id)
         channel_title = entity.title
-        print(f"🎯 Connected to Target Channel: {channel_title} (ID: {channel_id})")
+        print(f"🎯 Target Channel Connected: {channel_title} (ID: {channel_id})")
     except Exception as e:
-        print(f"❌ Cannot find or access the channel {TARGET_CHANNEL}: {e}")
+        print(f"❌ Access Denied to channel {TARGET_CHANNEL}: {e}")
         await client.disconnect()
         return
 
-    # إذا كانت القناة لم تسجل من قبل، نبدأ تتبعها من المعرف 0 (البداية تماماً)
     if channel_id not in state:
         state[channel_id] = {
             "channel_name": channel_title,
@@ -123,38 +134,43 @@ async def main():
     ch_info = state[channel_id]
     last_id = ch_info['last_processed_message_id']
     
-    print(f"⏳ Fetching new messages from historical ID: {last_id} (Chronological order)...")
+    print(f"⏳ Syncing archive starting from message ID: {last_id}...")
     state_updated = False
     
     try:
-        # حددنا الحد بـ 30 رسالة في الدورة الواحدة لتجنب تخطي حظور الاستهلاك (Rate Limits) لـ OpenRouter و Google
-        # الخيار reverse=True يضمن جلب الرسائل من الأقدم إلى الأحدث تصاعدياً
-        messages = await client.get_messages(entity, min_id=last_id, limit=30, reverse=True)
+        # جلب 50 رسالة بالتوالي في الدورة الواحدة من الأقدم للأحدث
+        messages = await client.get_messages(entity, min_id=last_id, limit=50, reverse=True)
         
         for msg in messages:
-            if msg.text and len(msg.text.strip()) > 5: # تجاهل النصوص القصيرة جداً كالرموز التعبيرية
-                print(f"Processing message ID {msg.id}...")
+            if msg.text and len(msg.text.strip()) > 5:
+                print(f"\n🎬 Processing message ID {msg.id}...")
+                
+                # 1. معالجة عبر الذكاء الاصطناعي والانتظار
                 ai_result = process_with_openrouter(msg.text)
                 
                 if ai_result.get("important") and ai_result.get("title"):
-                    upload_to_drive(ai_result["title"], ai_result["content"])
-                    # تهدئة العمل لثانية واحدة لتفادي الضغط على السيرفرات
-                    time.sleep(1)
-                else:
-                    print(f"Message ID {msg.id} skipped.")
+                    # 2. الرفع الآمن على Drive والانتظار
+                    success = upload_to_drive(ai_result["title"], ai_result["content"])
                     
+                    if success:
+                        print("⏳ Sleeping for 3 seconds before next message...")
+                        time.sleep(3)
+                else:
+                    print(f" Message ID {msg.id} marked as Unimportant/Ad and skipped.")
+                    
+                # تحديث ملف التتبع فوراً لكل رسالة تنتهي بنجاح
                 ch_info['last_processed_message_id'] = msg.id
                 state_updated = True
                 
     except Exception as e:
-        print(f"❌ Error pulling messages: {e}")
+        print(f"❌ Error during historical loop: {e}")
         
     await client.disconnect()
     
     if state_updated:
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        print("💾 Channels state updated successfully.")
+        print("\n💾 Progress saved successfully in channels_state.json.")
 
 if __name__ == "__main__":
     import asyncio
