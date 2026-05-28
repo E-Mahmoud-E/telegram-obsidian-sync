@@ -44,7 +44,7 @@ def process_with_openrouter(text):
     )
     
     payload = {
-        "model": "google/gemini-2.5-flash", 
+        "model": "openrouter/owl-alpha", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
