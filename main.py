@@ -44,7 +44,7 @@ def process_with_openrouter(text):
     )
     
     payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free", 
+        "model": "google/gemini-2.5-flash:free", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
