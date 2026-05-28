@@ -1,9 +1,9 @@
 import os
 import json
 import requests
+import time
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.types import Channel
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
@@ -18,7 +18,11 @@ GDRIVE_JSON = json.loads(os.environ["GDRIVE_CREDENTIALS"])
 
 STATE_FILE = "channels_state.json"
 
-# 2. دالة الاتصال بـ OpenRouter (نسخة مطورة ومحمية من الأخطاء)
+# ⭐ ضع هنا معرف القناة التي تريد التركيز عليها فقط (يمكنك وضع الرابط العام مثل '@اسم_القناة')
+# أو إذا كانت قناة خاصة ضع رقم الـ ID الخاص بها مباشرة (بدون علامات تنصيص إذا كان رقماً)
+TARGET_CHANNEL = "المنحة ELMIN7A" 
+
+# 2. دالة الاتصال بـ OpenRouter لفرز وتعديل وتسمية المحتوى
 def process_with_openrouter(text):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -40,7 +44,7 @@ def process_with_openrouter(text):
     )
     
     payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free", # نموذج مجاني تماماً ومستقر لتفادي خطأ الرصيد
+        "model": "meta-llama/llama-3-8b-instruct:free", 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
@@ -51,29 +55,20 @@ def process_with_openrouter(text):
         response = requests.post(url, headers=headers, json=payload)
         res_data = response.json()
         
-        # حماية في حال أرسل OpenRouter خطأ في الحساب أو الرصيد
         if 'error' in res_data:
-            print(f"❌ OpenRouter API Error Message: {res_data['error'].get('message')}")
-            return {"important": False}
-            
-        if 'choices' not in res_data:
-            print(f"❌ Unexpected OpenRouter Response structure: {res_data}")
+            print(f"❌ OpenRouter API Error: {res_data['error'].get('message')}")
             return {"important": False}
             
         ai_reply = res_data['choices'][0]['message']['content'].strip()
         
-        # تنظيف علامات الاقتباس البرمجية إذا أضافها النموذج تلقائياً
         if ai_reply.startswith("```json"):
             ai_reply = ai_reply.replace("```json", "").replace("```", "").strip()
         elif ai_reply.startswith("```"):
             ai_reply = ai_reply.replace("```", "").strip()
             
         return json.loads(ai_reply)
-    except json.JSONDecodeError:
-        print(f"⚠️ Failed to parse AI reply as JSON. Raw reply was: {ai_reply}")
-        return {"important": False}
     except Exception as e:
-        print(f"❌ General Error in OpenRouter processing: {e}")
+        print(f"❌ Error in OpenRouter processing: {e}")
         return {"important": False}
 
 # 3. دالة رفع الملف إلى Google Drive
@@ -89,11 +84,11 @@ def upload_to_drive(title, content):
     
     try:
         file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f" Successfully uploaded: {title}.md (ID: {file.get('id')})")
+        print(f" Successfully uploaded: {title}.md")
     except Exception as e:
         print(f"Error uploading to Drive: {e}")
 
-# 4. المنطق الرئيسي لتشغيل البوت سحابياً والتعرف التلقائي
+# 4. المنطق الرئيسي للتركيز على قناة واحدة والسحب من البداية
 async def main():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
@@ -107,52 +102,59 @@ async def main():
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.connect()
     
-    print("Scanning your Telegram account for channels...")
+    # الحصول على معلومات القناة المستهدفة لتأكيد وجودها ومعرفة اسمها الحقيقي
+    try:
+        entity = await client.get_entity(TARGET_CHANNEL)
+        channel_id = str(entity.id)
+        channel_title = entity.title
+        print(f"🎯 Connected to Target Channel: {channel_title} (ID: {channel_id})")
+    except Exception as e:
+        print(f"❌ Cannot find or access the channel {TARGET_CHANNEL}: {e}")
+        await client.disconnect()
+        return
+
+    # إذا كانت القناة لم تسجل من قبل، نبدأ تتبعها من المعرف 0 (البداية تماماً)
+    if channel_id not in state:
+        state[channel_id] = {
+            "channel_name": channel_title,
+            "last_processed_message_id": 0
+        }
+    
+    ch_info = state[channel_id]
+    last_id = ch_info['last_processed_message_id']
+    
+    print(f"⏳ Fetching new messages from historical ID: {last_id} (Chronological order)...")
     state_updated = False
     
-    async for dialog in client.iter_dialogs():
-        if isinstance(dialog.entity, Channel) and dialog.entity.broadcast:
-            channel_id = str(dialog.entity.id)
-            channel_title = dialog.title
-            
-            if channel_id not in state:
-                print(f" New channel detected and added: {channel_title} (ID: {channel_id})")
-                state[channel_id] = {
-                    "channel_name": channel_title,
-                    "last_processed_message_id": 0
-                }
+    try:
+        # حددنا الحد بـ 30 رسالة في الدورة الواحدة لتجنب تخطي حظور الاستهلاك (Rate Limits) لـ OpenRouter و Google
+        # الخيار reverse=True يضمن جلب الرسائل من الأقدم إلى الأحدث تصاعدياً
+        messages = await client.get_messages(entity, min_id=last_id, limit=30, reverse=True)
+        
+        for msg in messages:
+            if msg.text and len(msg.text.strip()) > 5: # تجاهل النصوص القصيرة جداً كالرموز التعبيرية
+                print(f"Processing message ID {msg.id}...")
+                ai_result = process_with_openrouter(msg.text)
+                
+                if ai_result.get("important") and ai_result.get("title"):
+                    upload_to_drive(ai_result["title"], ai_result["content"])
+                    # تهدئة العمل لثانية واحدة لتفادي الضغط على السيرفرات
+                    time.sleep(1)
+                else:
+                    print(f"Message ID {msg.id} skipped.")
+                    
+                ch_info['last_processed_message_id'] = msg.id
                 state_updated = True
                 
-            ch_info = state[channel_id]
-            last_id = ch_info['last_processed_message_id']
-            
-            print(f"Checking messages for: {channel_title} (From ID: {last_id})")
-            
-            try:
-                # جلب آخر 10 رسائل فقط في الدورة الواحدة لتجنب الضغط على الـ API وحظر الحساب
-                messages = await client.get_messages(dialog.entity, min_id=last_id, limit=10, reverse=True)
-                
-                for msg in messages:
-                    if msg.text:
-                        print(f"Processing message ID {msg.id} in {channel_title}...")
-                        ai_result = process_with_openrouter(msg.text)
-                        
-                        if ai_result.get("important") and ai_result.get("title"):
-                            upload_to_drive(ai_result["title"], ai_result["content"])
-                        else:
-                            print(f"Message ID {msg.id} skipped (Unimportant/Ad/Info).")
-                            
-                        ch_info['last_processed_message_id'] = msg.id
-                        state_updated = True
-            except Exception as e:
-                print(f"Error pulling messages from {channel_title}: {e}")
-                
+    except Exception as e:
+        print(f"❌ Error pulling messages: {e}")
+        
     await client.disconnect()
     
     if state_updated:
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        print("Channels state updated successfully.")
+        print("💾 Channels state updated successfully.")
 
 if __name__ == "__main__":
     import asyncio
