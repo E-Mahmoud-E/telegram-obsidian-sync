@@ -37,7 +37,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          MAX_UPLOADS: 10
+          MAX_UPLOADS: 1000
         run: python main.py
 
       - name: Commit and Push state changes
