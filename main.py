@@ -18,7 +18,7 @@ GDRIVE_JSON = json.loads(os.environ["GDRIVE_CREDENTIALS"])
 
 STATE_FILE = "channels_state.json"
 
-# 2. دالة الاتصال بـ OpenRouter لفرز وتعديل وتسمية المحتوى
+# 2. دالة الاتصال بـ OpenRouter (نسخة مطورة ومحمية من الأخطاء)
 def process_with_openrouter(text):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -40,7 +40,7 @@ def process_with_openrouter(text):
     )
     
     payload = {
-        "model": "google/gemini-2.5-flash", 
+        "model": "meta-llama/llama-3-8b-instruct:free", # نموذج مجاني تماماً ومستقر لتفادي خطأ الرصيد
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
@@ -50,12 +50,30 @@ def process_with_openrouter(text):
     try:
         response = requests.post(url, headers=headers, json=payload)
         res_data = response.json()
+        
+        # حماية في حال أرسل OpenRouter خطأ في الحساب أو الرصيد
+        if 'error' in res_data:
+            print(f"❌ OpenRouter API Error Message: {res_data['error'].get('message')}")
+            return {"important": False}
+            
+        if 'choices' not in res_data:
+            print(f"❌ Unexpected OpenRouter Response structure: {res_data}")
+            return {"important": False}
+            
         ai_reply = res_data['choices'][0]['message']['content'].strip()
+        
+        # تنظيف علامات الاقتباس البرمجية إذا أضافها النموذج تلقائياً
         if ai_reply.startswith("```json"):
             ai_reply = ai_reply.replace("```json", "").replace("```", "").strip()
+        elif ai_reply.startswith("```"):
+            ai_reply = ai_reply.replace("```", "").strip()
+            
         return json.loads(ai_reply)
+    except json.JSONDecodeError:
+        print(f"⚠️ Failed to parse AI reply as JSON. Raw reply was: {ai_reply}")
+        return {"important": False}
     except Exception as e:
-        print(f"Error in OpenRouter API: {e}")
+        print(f"❌ General Error in OpenRouter processing: {e}")
         return {"important": False}
 
 # 3. دالة رفع الملف إلى Google Drive
@@ -77,7 +95,6 @@ def upload_to_drive(title, content):
 
 # 4. المنطق الرئيسي لتشغيل البوت سحابياً والتعرف التلقائي
 async def main():
-    # تحميل حالة القنوات الحالية أو إنشاء ملف جديد إذا لم يكن موجوداً
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'r', encoding='utf-8') as f:
             try:
@@ -93,14 +110,11 @@ async def main():
     print("Scanning your Telegram account for channels...")
     state_updated = False
     
-    # جلب جميع الحوارات المشترك بها الحساب تلقائياً
     async for dialog in client.iter_dialogs():
-        # التحقق مما إذا كان الحوار عبارة عن "قناة" (وليست جروب أو محادثة شخصية)
         if isinstance(dialog.entity, Channel) and dialog.entity.broadcast:
             channel_id = str(dialog.entity.id)
             channel_title = dialog.title
             
-            # إذا كانت القناة جديدة ولم تسجل من قبل، أضفها تلقائياً للمراقبة
             if channel_id not in state:
                 print(f" New channel detected and added: {channel_title} (ID: {channel_id})")
                 state[channel_id] = {
@@ -115,8 +129,8 @@ async def main():
             print(f"Checking messages for: {channel_title} (From ID: {last_id})")
             
             try:
-                # جلب الرسائل الجديدة فقط لهذه القناة
-                messages = await client.get_messages(dialog.entity, min_id=last_id, limit=20, reverse=True)
+                # جلب آخر 10 رسائل فقط في الدورة الواحدة لتجنب الضغط على الـ API وحظر الحساب
+                messages = await client.get_messages(dialog.entity, min_id=last_id, limit=10, reverse=True)
                 
                 for msg in messages:
                     if msg.text:
@@ -128,7 +142,6 @@ async def main():
                         else:
                             print(f"Message ID {msg.id} skipped (Unimportant/Ad/Info).")
                             
-                        # تحديث المعرف لآخر رسالة تم التعامل معها
                         ch_info['last_processed_message_id'] = msg.id
                         state_updated = True
             except Exception as e:
@@ -136,7 +149,6 @@ async def main():
                 
     await client.disconnect()
     
-    # حفظ التحديثات والقنوات الجديدة في ملف الـ JSON لضمان عدم التكرار مستقبلاً
     if state_updated:
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
