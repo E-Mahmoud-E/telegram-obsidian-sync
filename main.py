@@ -1,177 +1,143 @@
 import os
 import json
+import asyncio
+import logging
 import requests
 import time
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.types import Channel
 from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 
-# 1. إعداد المتغيرات الأمنية من بيئة جيت هاب
-API_ID = int(os.environ["TELEGRAM_API_ID"])
-API_HASH = os.environ["TELEGRAM_API_HASH"]
-SESSION_STRING = os.environ["TELEGRAM_SESSION"]
-OPENROUTER_KEY = os.environ["OPENROUTER_API_KEY"]
-FOLDER_ID = os.environ["GDRIVE_FOLDER_ID"]
-GDRIVE_JSON = json.loads(os.environ["GDRIVE_CREDENTIALS"])
+# ─────────────────────────────────────────────
+# 0. إعداد نظام السجلات (Logging)
+# ─────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+log = logging.getLogger(__name__)
 
-STATE_FILE = "channels_state.json"
+# ─────────────────────────────────────────────
+# 1. قراءة والتحقق من المتغيرات البيئية من GitHub Secrets
+# ─────────────────────────────────────────────
+def get_required_env(key: str) -> str:
+    value = os.getenv(key)
+    if not value:
+        raise EnvironmentError(f"❌ المتغير البيئي '{key}' غير موجود في GitHub Secrets.")
+    return value
 
-# القناة المستهدفة
-TARGET_CHANNEL = "@elmin7a" 
+API_ID          = int(get_required_env("TELEGRAM_API_ID"))
+API_HASH        = get_required_env("TELEGRAM_API_HASH")
+SESSION_STRING  = get_required_env("TELEGRAM_SESSION")
+OPENROUTER_KEY  = get_required_env("OPENROUTER_API_KEY")
+FOLDER_ID       = get_required_env("GDRIVE_FOLDER_ID")
+GDRIVE_JSON     = json.loads(get_required_env("GDRIVE_CREDENTIALS"))
 
-# 2. دالة الاتصال بـ OpenRouter مع ميزة إعادة المحاولة التلقائية عند الفشل
-def process_with_openrouter(text, retries=3, delay=5):
+# ─────────────────────────────────────────────
+# 2. الإعدادات العامة
+# ─────────────────────────────────────────────
+STATE_FILE       = "channels_state.json"
+GDRIVE_SCOPES    = ["https://www.googleapis.com/auth/drive"]
+
+# ─────────────────────────────────────────────
+# 3. دالة الاتصال بـ OpenRouter
+# ─────────────────────────────────────────────
+def process_with_openrouter(text: str, retries: int = 3, delay: int = 5) -> dict:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com",
+        "X-Title": "Obsidian Unlimited Multi-Channel Automation"
     }
-    
+
     system_prompt = (
-        "أنت مساعد ذكي متخصص في إدارة المعرفة لبرنامج Obsidian. مهمتك فرز الملاحظات.\n"
-        "قيم الرسالة التالية: إذا كانت إعلاناً، أو رسالة ترويجية، أو تافهة ولا تقدم قيمة معرفية، اجعل حقل 'important' يساوي false.\n"
-        "إذا كانت مهمة وقيمة، قم بصياغتها وتنسيقها بلغة Markdown احترافية (عناوين، نقاط، وسوم مناسبة للسياق).\n"
-        "ابتكر عنواناً مختصراً جداً يصف المحتوى (3-5 كلمات كحد أقصى) وبدون أي رموز خاصة تمنع حفظ الملفات مثل (\\, /, :, *, ?, \", <, >, |).\n"
-        "يجب أن يكون ردك بصيغة JSON حصراً كالتالي:\n"
+        "أنت مساعد ذكي متخصص في إدارة المعرفة لبرنامج Obsidian. مهمتك فرز Motes.\n"
+        "قيّم الرسالة التالية: إذا كانت إعلاناً أو رسالة ترويجية أو تافهة ولا تقدم قيمة معرفية، "
+        "اجعل حقل 'important' يساوي false.\n"
+        "إذا كانت مهمة وقيّمة، صغها وتنسّقها بلغة Markdown احترافية (عناوين، نقاط، وسوم مناسبة).\n"
+        "ابتكر عنواناً مختصراً جداً يصف المحتوى (3-5 كلمات كحد أقصى) "
+        "وبدون أي رموز خاصة تمنع حفظ الملفات مثل: \\ / : * ? \" < > |\n"
+        "يجب أن يكون ردك بصيغة JSON حصراً وبدون أي نص إضافي:\n"
         "{\n"
         "  \"important\": true,\n"
         "  \"title\": \"العنوان المختصر هنا\",\n"
         "  \"content\": \"المحتوى المنسق بالكامل بـ Markdown هنا\"\n"
+        "لا تضف أي نص قبل أو بعد JSON. لا تستخدم ```json. الرد يجب أن يبدأ بـ { وينتهي بـ } فقط."
         "}"
     )
-    
+
     payload = {
-        "model": "openrouter/owl-alpha", 
+        "model": "google/gemini-2.5-flash",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
+            {"role": "user",   "content": text}
         ]
     }
-    
-    for attempt in range(retries):
+
+    for attempt in range(1, retries + 1):
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
             res_data = response.json()
-            
-            if 'error' in res_data:
-                print(f"⚠️ OpenRouter Error (Attempt {attempt+1}/{retries}): {res_data['error'].get('message')}")
+
+            if "error" in res_data:
+                log.warning(f"⚠️ OpenRouter Error (محاولة {attempt}/{retries}): {res_data['error'].get('message')}")
                 time.sleep(delay)
                 continue
-                
-            ai_reply = res_data['choices'][0]['message']['content'].strip()
+
+            ai_reply = res_data["choices"][0]["message"]["content"].strip()
             
             if ai_reply.startswith("```json"):
                 ai_reply = ai_reply.replace("```json", "").replace("```", "").strip()
             elif ai_reply.startswith("```"):
                 ai_reply = ai_reply.replace("```", "").strip()
-                
-            return json.loads(ai_reply)
-            
-        except Exception as e:
-            print(f"⚠️ Connection Error (Attempt {attempt+1}/{retries}): {e}")
+
+            return json.loads(ai_reply, strict=False)
+
+        except json.JSONDecodeError as e:
+            log.warning(f"⚠️ فشل تحليل JSON (محاولة {attempt}/{retries}): {e}")
             time.sleep(delay)
-            
-    print("❌ Failed to process message after all retries.")
+        except requests.RequestException as e:
+            log.warning(f"⚠️ خطأ في الاتصال (محاولة {attempt}/{retries}): {e}")
+            time.sleep(delay)
+        except Exception as e:
+            log.error(f"❌ خطأ غير متوقع (محاولة {attempt}/{retries}): {e}")
+            time.sleep(delay)
+
     return {"important": False}
 
-# 3. دالة رفع الملف إلى Google Drive (المحدثة والمصلحة لأخطاء الـ Token)
-def upload_to_drive(title, content):
-    # استخدام النطاق الأوسع والأشمل لحل مشكلة No access token
-    SCOPES = ["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)"]
-    
+# ─────────────────────────────────────────────
+# 4. دالة رفع الملف إلى Google Drive
+# ─────────────────────────────────────────────
+def upload_to_drive(title: str, content: str) -> bool:
     try:
-        # بناء التوثيق بشكل صريح وإجباري مع النطاق الصحيح
-        creds = service_account.Credentials.from_service_account_info(GDRIVE_JSON, scopes=SCOPES)
-        service = build('drive', 'v3', credentials=creds)
+        creds = service_account.Credentials.from_service_account_info(GDRIVE_JSON, scopes=GDRIVE_SCOPES)
+        creds.refresh(Request())
+        service = build("drive", "v3", credentials=creds)
+
+        file_metadata = {"name": f"{title}.md", "parents": [FOLDER_ID]}
+        media = MediaInMemoryUpload(content.encode("utf-8"), mimetype='text/markdown')
         
-        file_metadata = {
-            'name': f"{title}.md",
-            'parents': [FOLDER_ID]
-        }
-        
-        media = MediaInMemoryUpload(content.encode('utf-8'), mimetype='text/markdown')
-        
-        # تنفيذ أمر الإنشاء والرفع
         file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        print(f" Successfully uploaded to Drive: '{title}.md' (File ID: {file.get('id')})")
+        log.info(f"✅ تم رفع الملف: '{title}.md' (ID: {file.get('id')})")
         return True
     except Exception as e:
-        print(f"❌ Error uploading to Drive: {e}")
-        return False
+        log.error(f"❌ خطأ أثناء الرفع إلى Drive: {e}")
+    return False
 
-# 4. المنطق الرئيسي المستمر
-async def main():
+# ─────────────────────────────────────────────
+# 5. حفظ وتحميل الحالة
+# ─────────────────────────────────────────────
+def load_state() -> dict:
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
-            try:
-                state = json.load(f)
-            except json.JSONDecodeError:
-                state = {}
-    else:
-        state = {}
-        
-    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-    await client.connect()
-    
-    try:
-        entity = await client.get_entity(TARGET_CHANNEL)
-        channel_id = str(entity.id)
-        channel_title = entity.title
-        print(f"🎯 Target Channel Connected: {channel_title} (ID: {channel_id})")
-    except Exception as e:
-        print(f"❌ Access Denied to channel {TARGET_CHANNEL}: {e}")
-        await client.disconnect()
-        return
-
-    if channel_id not in state:
-        state[channel_id] = {
-            "channel_name": channel_title,
-            "last_processed_message_id": 0
-        }
-    
-    ch_info = state[channel_id]
-    last_id = ch_info['last_processed_message_id']
-    
-    print(f"⏳ Syncing archive starting from message ID: {last_id}...")
-    state_updated = False
-    
-    try:
-        # جلب 50 رسالة بالتوالي في الدورة الواحدة من الأقدم للأحدث
-        messages = await client.get_messages(entity, min_id=last_id, limit=50, reverse=True)
-        
-        for msg in messages:
-            if msg.text and len(msg.text.strip()) > 5:
-                print(f"\n🎬 Processing message ID {msg.id}...")
-                
-                # 1. معالجة عبر الذكاء الاصطناعي والانتظار
-                ai_result = process_with_openrouter(msg.text)
-                
-                if ai_result.get("important") and ai_result.get("title"):
-                    # 2. الرفع الآمن على Drive والانتظار
-                    success = upload_to_drive(ai_result["title"], ai_result["content"])
-                    
-                    if success:
-                        print("⏳ Sleeping for 3 seconds before next message...")
-                        time.sleep(3)
-                else:
-                    print(f" Message ID {msg.id} marked as Unimportant/Ad and skipped.")
-                    
-                # تحديث ملف التتبع فوراً لكل رسالة تنتهي بنجاح
-                ch_info['last_processed_message_id'] = msg.id
-                state_updated = True
-                
-    except Exception as e:
-        print(f"❌ Error during historical loop: {e}")
-        
-    await client.disconnect()
-    
-    if state_updated:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        print("\n💾 Progress saved successfully in channels_state.json.")
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            log.warning(f"⚠️ تعذّر قراءة ملف الحالة، سيتم البدء من جديد: {e
