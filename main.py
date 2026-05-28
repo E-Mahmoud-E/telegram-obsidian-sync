@@ -49,8 +49,8 @@ FOLDER_ID       = get_required_env("GDRIVE_FOLDER_ID")
 # ─────────────────────────────────────────────
 # 3. الإعدادات العامة (قابلة للتعديل)
 # ─────────────────────────────────────────────
-STATE_FILE       = "channels_state.json"
-CREDENTIALS_FILE = "oauth_credentials.json"
+BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE       = os.path.join(BASE_DIR, "channels_state.json")
 TARGET_CHANNEL   = "@elmin7a"
 MAX_UPLOADS      = int(os.getenv("MAX_UPLOADS", "1000"))   # قابل للتعديل عبر .env
 GDRIVE_SCOPES    = ["https://www.googleapis.com/auth/drive"]
@@ -141,8 +141,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 
-OAUTH_FILE  = "oauth_credentials.json"
-TOKEN_FILE  = "token.json"
+OAUTH_FILE  = os.path.join(BASE_DIR, "oauth_credentials.json")
+TOKEN_FILE  = os.path.join(BASE_DIR, "token.json")
 
 def get_drive_service():
     creds = None
@@ -257,7 +257,7 @@ async def main():
     try:
         messages = await client.get_messages(
             entity,
-            min_id=last_id,
+            offset_id=last_id,
             limit=200,
             reverse=True   # من الأقدم للأحدث
         )
