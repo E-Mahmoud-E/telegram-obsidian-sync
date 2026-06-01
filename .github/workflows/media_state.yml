@@ -37,7 +37,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           # نحدد الحد الأقصى للملفات المرفوعة في المرة الواحدة بـ 30 تجنباً لـ تمدد وقت الـ Action إذا كانت الملفات ضخمة
-          MAX_UPLOADS: 30 
+          MAX_UPLOADS: 1000
         run: python media_to_gdrive.py
 
       - name: Commit and Push state changes
