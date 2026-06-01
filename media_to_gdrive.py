@@ -44,19 +44,22 @@ def get_required_env(key: str) -> str:
 API_ID          = int(get_required_env("TELEGRAM_API_ID"))
 API_HASH        = get_required_env("TELEGRAM_API_HASH")
 SESSION_STRING  = get_required_env("TELEGRAM_SESSION")
-GDRIVE_FOLDER_ID = get_required_env("GDRIVE_FOLDER_ID")
+MAIN_FOLDER_ID  = get_required_env("GDRIVE_FOLDER_ID") # مجلد الأوبسيديان الرئيسي
 
 # ─────────────────────────────────────────────
-# 3. الإعدادات العامة للأداة الجديدة
+# 3. الإعدادات العامة للأداة
 # ─────────────────────────────────────────────
 BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE       = os.path.join(BASE_DIR, "media_state.json") # ملف حالة منفصل للوسائط
-TARGET_CHANNEL   = "@L_alnader22"                                   # ⚠️ ضع معرف قناتك الجديدة هنا
-MAX_UPLOADS      = int(os.getenv("MAX_UPLOADS", "50"))         # يفضل تقليله للوسائط الكبيرة لتجنب ميعاد الـ Timeout
+STATE_FILE       = os.path.join(BASE_DIR, "media_state.json")
+TARGET_CHANNEL   = "@L_alnader22"
+MAX_UPLOADS      = int(os.getenv("MAX_UPLOADS", "30"))
 GDRIVE_SCOPES    = ["https://www.googleapis.com/auth/drive"]
 
+# اسم المجلد الثابت الشامل لكافة الوسائط داخل أوبسيديان
+MEDIA_BASE_FOLDER_NAME = "Telegram_Media"
+
 # ─────────────────────────────────────────────
-# 4. إدارة اتصال Google Drive والرفع
+# 4. إدارة اتصال Google Drive والمجلدات الهيكلية
 # ─────────────────────────────────────────────
 OAUTH_FILE  = os.path.join(BASE_DIR, "oauth_credentials.json")
 TOKEN_FILE  = os.path.join(BASE_DIR, "token.json")
@@ -64,29 +67,54 @@ TOKEN_FILE  = os.path.join(BASE_DIR, "token.json")
 def get_drive_service():
     creds = None
     if os.path.exists(TOKEN_FILE):
-        try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, GDRIVE_SCOPES)
-        except Exception:
-            os.remove(TOKEN_FILE)
+        try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, GDRIVE_SCOPES)
+        except Exception: os.remove(TOKEN_FILE)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try: creds.refresh(Request())
             except Exception: os.remove(TOKEN_FILE); creds = None
-
         if not creds:
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_FILE, GDRIVE_SCOPES)
             creds = flow.run_local_server(port=0)
-
-        with open(TOKEN_FILE, "w") as f:
-            f.write(creds.to_json())
+        with open(TOKEN_FILE, "w") as f: f.write(creds.to_json())
 
     return build("drive", "v3", credentials=creds)
 
-def upload_media_to_drive(service, file_bytes: bytes, filename: str, mime_type: str) -> bool:
-    """ترفع ملف الوسائط من الذاكرة مباشرة إلى المجلد المحدد."""
+def get_or_create_folder(service, folder_name: str, parent_id: str) -> str:
+    """دالة عامة للبحث عن مجلد أو إنشائه داخل مجلد أب محدد."""
+    query = f"name = '{folder_name}' and '{parent_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    files = results.get("files", [])
+    
+    if files:
+        return files[0]["id"]
+    
+    folder_metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    sub_folder = service.files().create(body=folder_metadata, fields="id").execute()
+    log.info(f"📁 تم إنشاء مجلد جديد باسم: {folder_name}")
+    return sub_folder.get("id")
+
+def get_target_subfolder_id(service, base_media_folder_id: str, mime_type: str) -> str:
+    """تحديد المجلد الفرعي المناسب (Photos, Videos, Documents, Audio) بناءً على نوع الملف."""
+    if mime_type.startswith("image/"):
+        sub_folder_name = "Photos"
+    elif mime_type.startswith("video/"):
+        sub_folder_name = "Videos"
+    elif mime_type.startswith("audio/") or mime_type.startswith("voice/"):
+        sub_folder_name = "Audio"
+    else:
+        sub_folder_name = "Documents" # للملفات المضغوطة، الـ PDF، وخلافه
+        
+    return get_or_create_folder(service, sub_folder_name, base_media_folder_id)
+
+def upload_media_to_drive(service, file_bytes: bytes, filename: str, mime_type: str, target_folder_id: str) -> bool:
     try:
-        file_metadata = {"name": filename, "parents": [GDRIVE_FOLDER_ID]}
+        file_metadata = {"name": filename, "parents": [target_folder_id]}
         media = MediaInMemoryUpload(file_bytes, mimetype=mime_type, resumable=True)
         
         file = service.files().create(
@@ -95,18 +123,16 @@ def upload_media_to_drive(service, file_bytes: bytes, filename: str, mime_type: 
             fields="id"
         ).execute()
         
-        log.info(f"✅ تم رفع الملف بنجاح: '{filename}' (ID: {file.get('id')})")
+        log.info(f"✅ تم رفع الملف: '{filename}' بنجاح.")
         return True
     except Exception as e:
-        log.error(f"❌ خطأ أثناء رفع الملف '{filename}' إلى Drive: {e}")
+        log.error(f"❌ خطأ أثناء رفع الملف '{filename}': {e}")
         return False
 
 # ─────────────────────────────────────────────
-# 5. استخراج اسم الملف ونوع الـ Mime تلقائياً
+# 5. استخراج تفاصيل الميديا ونوع الـ Mime لقناة تيليجرام
 # ─────────────────────────────────────────────
 def get_media_details(msg) -> tuple:
-    """تستخرج اسم الملف المناسب ونوع الـ Mime للوسائط المختلفة."""
-    # افتراضات أولية
     filename = f"media_{msg.id}"
     mime_type = "application/octet-stream"
 
@@ -114,17 +140,15 @@ def get_media_details(msg) -> tuple:
         if msg.file.name:
             filename = msg.file.name
         else:
-            # توليد اسم بناءً على الامتداد إذا لم يتوفر اسم صريح (مثل بعض الصور والفيديوهات)
             ext = msg.file.ext if msg.file.ext else ""
             filename = f"media_{msg.id}{ext}"
-        
         if msg.file.mime_type:
             mime_type = msg.file.mime_type
 
     return filename, mime_type
 
 # ─────────────────────────────────────────────
-# 6. حفظ وتحميل الحالة والمنطق الرئيسي
+# 6. إدارة الحالة والمنطق الرئيسي
 # ─────────────────────────────────────────────
 def load_state() -> dict:
     if os.path.exists(STATE_FILE):
@@ -144,6 +168,9 @@ async def main():
     if not service:
         log.error("❌ تعذّر الاتصال بـ Google Drive.")
         return
+
+    # 1. جلب أو إنشاء المجلد الرئيسي الثابت للوسائط
+    base_media_folder_id = get_or_create_folder(service, MEDIA_BASE_FOLDER_NAME, MAIN_FOLDER_ID)
 
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
     await client.connect()
@@ -177,7 +204,6 @@ async def main():
                 log.info(f"🛑 تم الوصول للحد الأقصى المسموح به في الجلسة ({MAX_UPLOADS} ملف).")
                 break
 
-            # التحقق مما إذا كانت الرسالة تحتوي على ملف أو وسائط (صورة، فيديو، مستند، صوت)
             if not msg.media:
                 ch_info["last_processed_message_id"] = msg.id
                 continue
@@ -185,22 +211,24 @@ async def main():
             log.info(f"🎬 جاري معالجة وسائط الرسالة رقم ID {msg.id} ...")
             filename, mime_type = get_media_details(msg)
 
+            # 2. تحديد المجلد الفرعي النوعي المناسب تلقائياً (Photos, Videos، إلخ) داخل المجلد الرئيسي
+            target_subfolder_id = get_target_subfolder_id(service, base_media_folder_id, mime_type)
+
             try:
-                # تحميل الملف مباشرة إلى الذاكرة لتجنب استهلاك مساحة القرص على سيرفر الـ Action
                 file_buffer = io.BytesIO()
                 await client.download_media(msg.media, file_buffer)
                 file_bytes = file_buffer.getvalue()
 
                 if len(file_bytes) > 0:
-                    success = upload_media_to_drive(service, file_bytes, filename, mime_type)
+                    success = upload_media_to_drive(service, file_bytes, filename, mime_type, target_subfolder_id)
                     if success:
                         files_uploaded += 1
-                        time.sleep(1) # تأخير طفيف بين الملفات لحماية الاتصال
+                        time.sleep(1)
                 else:
-                    log.warning(f"⚠️ الملف في الرسالة {msg.id} فارغ أو فشل تحميله.")
+                    log.warning(f"⚠️ الملف في الرسالة {msg.id} فارغ.")
 
             except Exception as media_err:
-                log.error(f"❌ خطأ أثناء تحميل الوسائط من تيليجرام للرسالة {msg.id}: {media_err}")
+                log.error(f"❌ خطأ أثناء تحميل الوسائط للرسالة {msg.id}: {media_err}")
 
             ch_info["last_processed_message_id"] = msg.id
             save_state(state)
@@ -213,4 +241,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-      
