@@ -52,7 +52,7 @@ MAIN_FOLDER_ID  = get_required_env("GDRIVE_FOLDER_ID") # مجلد الأوبسي
 BASE_DIR         = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE       = os.path.join(BASE_DIR, "media_state.json")
 TARGET_CHANNEL   = "@L_alnader22"
-MAX_UPLOADS      = int(os.getenv("MAX_UPLOADS", "30"))
+MAX_UPLOADS      = int(os.getenv("MAX_UPLOADS", "1000"))
 GDRIVE_SCOPES    = ["https://www.googleapis.com/auth/drive"]
 
 # اسم المجلد الثابت الشامل لكافة الوسائط داخل أوبسيديان
