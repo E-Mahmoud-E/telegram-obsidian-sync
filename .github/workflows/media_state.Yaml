@@ -1,0 +1,50 @@
+name: Telegram Media to Google Drive Sync
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-media-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install telethon google-api-python-client google-auth-httplib2 google-auth-oauthlib python-dotenv
+
+      - name: Create Google Credentials Files
+        run: |
+          echo '${{ secrets.OAUTH_CREDENTIALS_JSON }}' > oauth_credentials.json
+          echo '${{ secrets.TOKEN_JSON }}' > token.json
+
+      - name: Run Media Sync Script
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          # نحدد الحد الأقصى للملفات المرفوعة في المرة الواحدة بـ 30 تجنباً لـ تمدد وقت الـ Action إذا كانت الملفات ضخمة
+          MAX_UPLOADS: 30 
+        run: python media_to_gdrive.py
+
+      - name: Commit and Push state changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add media_state.json token.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update media state and token [skip ci]"
+          git push
