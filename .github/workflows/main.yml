@@ -2,7 +2,7 @@ name: Telegram to Obsidian Auto Sync
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # يعمل تلقائياً كل 6 ساعات
+    - cron: '0 */2 * * *' # يعمل تلقائياً كل 6 ساعات
   workflow_dispatch:      # يسمح لك بتشغيل السكربت يدوياً من واجهة GitHub
 
 jobs:
