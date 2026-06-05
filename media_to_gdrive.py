@@ -66,20 +66,53 @@ TOKEN_FILE  = os.path.join(BASE_DIR, "token.json")
 
 def get_drive_service():
     creds = None
-    if os.path.exists(TOKEN_FILE):
-        try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, GDRIVE_SCOPES)
-        except Exception: os.remove(TOKEN_FILE)
+    
+    # محاولة القراءة من الـ Secret الممرر عبر الـ YAML
+    gdrive_token_env = os.getenv("GOOGLE_TOKEN_JSON")
+    
+    if gdrive_token_env:
+        try:
+            token_data = json.loads(gdrive_token_env)
+            creds = Credentials.from_authorized_user_info(token_data, GDRIVE_SCOPES)
+            log.info("🔐 تم تحميل صلاحيات Google Drive من الـ Secret بنجاح.")
+        except Exception as e:
+            log.error(f"❌ خطأ في تحليل بيانات السيكرت JSON: {e}")
+            
+    # خيار احتياطي في حال التشغيل المحلي على جهازك فقط
+    local_token_file = os.path.join(BASE_DIR, "token.json")
+    local_oauth_file = os.path.join(BASE_DIR, "oauth_credentials.json")
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try: creds.refresh(Request())
-            except Exception: os.remove(TOKEN_FILE); creds = None
-        if not creds:
-            flow = InstalledAppFlow.from_client_secrets_file(OAUTH_FILE, GDRIVE_SCOPES)
+    if not creds and os.path.exists(local_token_file):
+        try:
+            creds = Credentials.from_authorized_user_file(local_token_file, GDRIVE_SCOPES)
+            log.info("🔐 تم تحميل الصلاحيات من ملف token.json المحلي.")
+        except Exception:
+            os.remove(local_token_file)
+
+    if creds and creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception:
+            creds = None
+
+    if not creds:
+        # حماية حاسمة: إذا كنا على سيرفر GitHub Actions، نمنع تشغيل المتصفح تماماً
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            log.error("❌ فشل ذريع: السكربت يعمل على سيرفر GitHub ولم يجد متغير السيكرت GOOGLE_TOKEN_JSON. تحقق من إعدادات الـ YAML والـ Secrets!")
+            return None
+            
+        # يعمل محلياً على جهازك فقط
+        if os.path.exists(local_oauth_file):
+            flow = InstalledAppFlow.from_client_secrets_file(local_oauth_file, GDRIVE_SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, "w") as f: f.write(creds.to_json())
+            with open(local_token_file, "w") as f:
+                f.write(creds.to_json())
+        else:
+            log.error("❌ لا يوجد توكن صالح ولا ملف مصادقة محلي.")
+            return None
 
     return build("drive", "v3", credentials=creds)
+    
 
 def get_or_create_folder(service, folder_name: str, parent_id: str) -> str:
     """دالة عامة للبحث عن مجلد أو إنشائه داخل مجلد أب محدد."""
