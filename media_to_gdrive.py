@@ -67,22 +67,23 @@ TOKEN_FILE  = os.path.join(BASE_DIR, "token.json")
 def get_drive_service():
     creds = None
     
-    # محاولة القراءة من الـ Secret الممرر عبر الـ YAML
+    # 1. محاولة القراءة من الـ Secret الممرر عبر الـ YAML
     gdrive_token_env = os.getenv("GOOGLE_TOKEN_JSON")
     
     if gdrive_token_env:
         try:
             token_data = json.loads(gdrive_token_env)
             creds = Credentials.from_authorized_user_info(token_data, GDRIVE_SCOPES)
-            log.info("🔐 تم تحميل صلاحيات Google Drive من الـ Secret بنجاح.")
+            log.info("🔐 تم تحميل صلاحيات Google Drive من الـ Secret بنجاح وبدء العمل.")
+            return build("drive", "v3", credentials=creds) # إنهاء الدالة فوراً بالنجاح
         except Exception as e:
             log.error(f"❌ خطأ في تحليل بيانات السيكرت JSON: {e}")
-            
-    # خيار احتياطي في حال التشغيل المحلي على جهازك فقط
+
+    # 2. خيار احتياطي في حال التشغيل المحلي على جهازك فقط
     local_token_file = os.path.join(BASE_DIR, "token.json")
     local_oauth_file = os.path.join(BASE_DIR, "oauth_credentials.json")
 
-    if not creds and os.path.exists(local_token_file):
+    if os.path.exists(local_token_file):
         try:
             creds = Credentials.from_authorized_user_file(local_token_file, GDRIVE_SCOPES)
             log.info("🔐 تم تحميل الصلاحيات من ملف token.json المحلي.")
@@ -95,13 +96,12 @@ def get_drive_service():
         except Exception:
             creds = None
 
+    # 3. إذا فشل السيرفر في الحصول على creds تماماً
     if not creds:
-        # حماية حاسمة: إذا كنا على سيرفر GitHub Actions، نمنع تشغيل المتصفح تماماً
         if os.getenv("GITHUB_ACTIONS") == "true":
-            log.error("❌ فشل ذريع: السكربت يعمل على سيرفر GitHub ولم يجد متغير السيكرت GOOGLE_TOKEN_JSON. تحقق من إعدادات الـ YAML والـ Secrets!")
+            log.error("❌ خطأ: لم يتم العثور على توكن صالح في الـ Secret.")
             return None
             
-        # يعمل محلياً على جهازك فقط
         if os.path.exists(local_oauth_file):
             flow = InstalledAppFlow.from_client_secrets_file(local_oauth_file, GDRIVE_SCOPES)
             creds = flow.run_local_server(port=0)
