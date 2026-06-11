@@ -53,7 +53,7 @@ def ask_openrouter(prompt: str) -> dict:
     
     # استخدام نموذج سريع ومجاني/رخيص وممتاز في النصوص مثل Llama 3
     data = {
-        "model": "meta-llama/llama-3-8b-instruct:free",
+        "model": "openrouter/owl-alpha",
         "messages": [
             {
                 "role": "user",
