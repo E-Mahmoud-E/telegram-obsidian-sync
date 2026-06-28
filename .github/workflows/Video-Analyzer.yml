@@ -31,4 +31,4 @@ jobs:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID2 }} # تم التعديل هنا للمتغير الجديد
         DRIVE_TOKEN_JSON: ${{ secrets.DRIVE_TOKEN_JSON }}
-      run: python cd Obsidian-Videos app.py
+      run: python app.py
