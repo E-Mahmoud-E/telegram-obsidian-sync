@@ -12,7 +12,7 @@ import io
 API_ID = int(os.environ['TELEGRAM_API_ID'])
 API_HASH = os.environ['TELEGRAM_API_HASH']
 OPENROUTER_API_KEY = os.environ['OPENROUTER_API_KEY']
-DRIVE_FOLDER_ID = os.environ['DRIVE_FOLDER_ID2'] # يقرأ المتغير الممرر من الـ yml
+DRIVE_FOLDER_ID = os.environ['DRIVE_FOLDER_ID'] # يقرأ المتغير الممرر من الـ yml
 
 # معرّف النموذج الصحيح في OpenRouter (تم استخدام qwen كمثال من Alibaba أو يمكنك إبقاء gemini-2.5-flash)
 MODEL_NAME = "Alibaba:HappyHorse 1.1" 
