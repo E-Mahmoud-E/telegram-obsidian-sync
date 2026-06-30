@@ -11,11 +11,11 @@ import io
 # --- جلب الإعدادات السرية من مستودع GitHub ---
 API_ID = int(os.environ['TELEGRAM_API_ID'])
 API_HASH = os.environ['TELEGRAM_API_HASH']
-BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 OPENROUTER_API_KEY = os.environ['OPENROUTER_API_KEY']
-DRIVE_FOLDER_ID = os.environ['DRIVE_FOLDER_ID2']
+DRIVE_FOLDER_ID = os.environ['DRIVE_FOLDER_ID2'] # يقرأ المتغير الممرر من الـ yml
 
-MODEL_NAME = "Alibaba: HappyHorse 1.1"
+# معرّف النموذج الصحيح في OpenRouter (تم استخدام qwen كمثال من Alibaba أو يمكنك إبقاء gemini-2.5-flash)
+MODEL_NAME = "Alibaba:HappyHorse 1.1" 
 STATE_FILE_NAME = "last_id.txt"
 
 # --- 1. الاتصال بجوجل درايف ---
@@ -41,7 +41,7 @@ def get_last_processed_id(service):
         files = results.get('files', [])
         
         if not files:
-            return 0 # إذا لم يكن الملف موجوداً ابدأ من الصفر
+            return 0 
             
         file_id = files[0]['id']
         request = service.files().get_media(fileId=file_id)
@@ -60,7 +60,6 @@ def update_last_processed_id(service, last_id):
     file_metadata = {'name': STATE_FILE_NAME, 'parents': [DRIVE_FOLDER_ID]}
     media = MediaInMemoryUpload(str(last_id).encode('utf-8'), mimetype='text/plain')
     
-    # ابحث أولاً إذا كان الملف موجوداً لتحديثه بدلاً من تكراره
     results = service.files().list(
         q=f"'{DRIVE_FOLDER_ID}' in parents and name='{STATE_FILE_NAME}' and trashed=false",
         fields="files(id)"
@@ -108,16 +107,16 @@ async def main():
     last_id = get_last_processed_id(service)
     print(f"🔍 آخر ID تم معالجته سابقاً ومخزن في الدرايف هو: {last_id}")
 
-    async with TelegramClient('bot_session_gh', API_ID, API_HASH) as client:
-        await client.start(bot_token=BOT_TOKEN)
+    # الاعتماد على ملف الجلسة المشحون مسبقاً للحساب الشخصي
+    async with TelegramClient('gh_user_session', API_ID, API_HASH) as client:
+        # تسجيل الدخول المباشر دون طلب توكن بوت
+        await client.connect()
         
         new_messages = []
-        # جلب آخر 50 رسالة قادمة وفلترتها بناءً على الـ ID
         async for message in client.iter_messages('Links', limit=50):
             if message.text and message.text.strip().startswith("http") and message.id > last_id:
                 new_messages.append(message)
         
-        # معالجة الرسائل من الأقدم إلى الأحدث
         new_messages.reverse()
         
         if not new_messages:
@@ -139,7 +138,6 @@ async def main():
             except Exception as e:
                 print(f"❌ خطأ أثناء المعالجة: {e}")
         
-        # تحديث ملف الحالة بأعلى ID تم الوصول إليه بنجاح
         update_last_processed_id(service, highest_id)
         print(f"💾 تم تحديث ملف الحالة في Google Drive إلى الـ ID الجديد: {highest_id}")
 
