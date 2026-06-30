@@ -129,7 +129,7 @@ async def main():
 
     new_messages = []
     # جلب آخر رسائل من القناة وفلترتها
-    async for message in client.iter_messages('Links', limit=50):
+    async for message in client.iter_messages('@VideoAnalyzer', limit=50):
         if message.text and message.text.strip().startswith("http") and message.id > last_id:
             new_messages.append(message)
     
